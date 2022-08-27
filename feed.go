@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"path"
@@ -20,6 +21,11 @@ const (
 
 // ErrNotFound occurs when CVE is expected but no result is returned from fetch operations
 var ErrNotFound = errors.New("CVE not found")
+
+// Fetch description returns just the description for a given CVE ID.
+func (c *Client) FetchDescription(cveID string) string {
+	return ""
+}
 
 // FetchCVE extracts the year of a CVE ID, and returns a CVEItem data struct
 // from the most up-to-date NVD data feed for that year
@@ -70,6 +76,62 @@ func (c *Client) FetchUpdatedCVEs() ([]CVEItem, error) {
 		return nil, fmt.Errorf("error unmarshaling modified feed: %v", err)
 	}
 	return nvd.CVEItems, nil
+}
+
+func (c *Client) PrefetchYear(year string) error {
+	p := c.pathToFeed(year)
+	need := !isFileExists(p)
+	if need {
+		log.Println("Downloading year", year)
+		err := c.downloadFeed(
+			fmt.Sprintf(nvdDataFeeds, year),
+			c.pathToFeed(year),
+		)
+		if err != nil {
+			return fmt.Errorf("error fetching %s remote feed: %v", year, err)
+		}
+	} else {
+		log.Println("Local data exists for", year)
+	}
+	if c.CompactCVEChan == nil {
+		c.CompactCVEChan = make(chan CompactCVE)
+	}
+	err := c.createCompactSummary(year)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Client) createCompactSummary(year string) error {
+	ch := make(chan CompactCVE)
+	// the compact summary only picks the fields we're interested in: description.
+	// stage 1: iterate through all the json and emit only the useful fields
+	f, err := os.Open(c.pathToFeed(year))
+	if err != nil {
+		return err
+	}
+	all := &cveDesc{}
+	buf, _ := ioutil.ReadAll(f)
+	json.Unmarshal(buf, all)
+	go func() {
+		for _, i := range all.CVEITems {
+			for _, d := range i.CVE.Description.Data {
+				ch <- CompactCVE{ID: i.CVE.Meta.ID, Description: d.Value}
+			}
+		}
+		close(ch)
+	}()
+
+	// stage 2: store those fields in a key-value store.
+	ctr := 0
+	for cve := range ch {
+		fmt.Println(cve.ID, "=>", cve.Description)
+		ctr += 1
+	}
+	fmt.Println("read ", ctr, "records")
+
+	return nil
 }
 
 func (c *Client) updateFeed(year string) error {
@@ -136,6 +198,10 @@ func (c *Client) pathToFeed(year string) string {
 
 func (c *Client) pathToMeta(year string) string {
 	return path.Join(c.feedDir, fmt.Sprintf("%s.meta", year))
+}
+
+func (c *Client) pathToCompact(year string) string {
+	return path.Join(c.feedDir, fmt.Sprintf("%s.db", year))
 }
 
 func (c *Client) loadFeed(year string) ([]byte, error) {
@@ -268,4 +334,11 @@ func (c *Client) saveNVDMeta(year string, meta []byte) error {
 		return fmt.Errorf("error writing to %s: %v", p, err)
 	}
 	return nil
+}
+
+func isFileExists(filePath string) bool {
+	if _, err := os.Stat(filePath); err == nil {
+		return true
+	}
+	return false
 }

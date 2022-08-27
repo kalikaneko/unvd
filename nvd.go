@@ -6,7 +6,8 @@ import (
 )
 
 type Client struct {
-	feedDir string
+	feedDir        string
+	CompactCVEChan chan CompactCVE
 }
 
 func NewClient(baseDir string) (cl *Client, err error) {
