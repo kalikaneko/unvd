@@ -1,11 +1,15 @@
-# nvd [![Go Report](https://goreportcard.com/badge/github.com/daehee/nvd)](https://goreportcard.com/report/github.com/daehee/nvd)
+# unvd 
 
 Fast, simple library in Go to fetch CVEs from the NVD (U.S. National Vulnerability Database) feeds.
+
+This is a fork of
+[https://github.com/daehee/nvd](https://github.com/daehee/nvd) optimized for
+speed when you only need to pick a few fields.
 
 ## Install
 
 ```
-go get github.com/daehee/nvd
+go get github.com/kalikaneko/unvd
 ```
 
 ## Usage

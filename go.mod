@@ -1,4 +1,4 @@
-module github.com/daehee/nvd
+module github.com/kalikaneko/unvd
 
 go 1.15
 
