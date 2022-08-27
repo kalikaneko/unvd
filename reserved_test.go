@@ -10,8 +10,7 @@ func TestFetchReservedCVE(t *testing.T) {
 	tests := []struct {
 		cveID string
 	}{
-		{"CVE-2020-27949"},
-		{"CVE-2020-27190"},
+		{"CVE-2022-38784"},
 	}
 
 	for _, tt := range tests {

@@ -33,6 +33,7 @@ func TestClient_FetchCVE(t *testing.T) {
 	for _, tt := range tests {
 		t.Logf("run subtest %s", tt.cveID)
 
+		os.MkdirAll("tmp", os.ModePerm)
 		cl, err := NewClient("tmp")
 		if err != nil {
 			t.Fatal(err)
