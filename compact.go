@@ -2,8 +2,8 @@ package nvd
 
 // fields for compact representation of a CVE
 
-type CompactCVE struct {
-	ID          string
+type CVEIndex struct {
+	IDShort     int `boltholdUnique:"UniqueIDShort"`
 	Description string
 }
 

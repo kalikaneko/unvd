@@ -11,6 +11,9 @@ import (
 	"path"
 	"regexp"
 	"strconv"
+	"strings"
+
+	"github.com/timshannon/bolthold"
 )
 
 const (
@@ -93,9 +96,6 @@ func (c *Client) PrefetchYear(year string) error {
 	} else {
 		log.Println("Local data exists for", year)
 	}
-	if c.CompactCVEChan == nil {
-		c.CompactCVEChan = make(chan CompactCVE)
-	}
 	err := c.createCompactSummary(year)
 	if err != nil {
 		return err
@@ -103,8 +103,53 @@ func (c *Client) PrefetchYear(year string) error {
 	return nil
 }
 
+func (c *Client) openCompactDB(year string) (*bolthold.Store, error) {
+	store, err := bolthold.Open(c.pathToCompact(year), 0666, nil)
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+func (c *Client) GetDescription(cveID string) (string, error) {
+	if !IsCVEIDStrict(cveID) {
+		return "", fmt.Errorf("invalid CVE ID: %s", cveID)
+	}
+	year := strings.Split(cveID, "-")[1]
+	if !isFileExists(c.pathToCompact(year)) {
+		err := c.createCompactSummary(year)
+		if err != nil {
+			return "", err
+		}
+	}
+	shortID, _ := strconv.Atoi(strings.Split(cveID, "-")[2])
+
+	store, err := c.openCompactDB(year)
+	if err != nil {
+		return "", err
+	}
+	res := []*CVEIndex{}
+	store.Find(&res, bolthold.Where("IDShort").Eq(int(shortID)))
+	if len(res) == 0 {
+		return "", fmt.Errorf("CVE not found: %s", cveID)
+	} else if len(res) > 1 {
+		return "", fmt.Errorf("Too many CVEs: %d", len(res))
+	}
+	return res[0].Description, nil
+}
+
 func (c *Client) createCompactSummary(year string) error {
-	ch := make(chan CompactCVE)
+	if isFileExists(c.pathToCompact(year)) {
+		return nil
+	}
+	store, err := c.openCompactDB(year)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	ch := make(chan CVEIndex, 5000)
+
 	// the compact summary only picks the fields we're interested in: description.
 	// stage 1: iterate through all the json and emit only the useful fields
 	f, err := os.Open(c.pathToFeed(year))
@@ -117,19 +162,25 @@ func (c *Client) createCompactSummary(year string) error {
 	go func() {
 		for _, i := range all.CVEITems {
 			for _, d := range i.CVE.Description.Data {
-				ch <- CompactCVE{ID: i.CVE.Meta.ID, Description: d.Value}
+				idx, _ := strconv.Atoi(strings.Split(i.CVE.Meta.ID, "-")[2])
+				ch <- CVEIndex{IDShort: idx, Description: d.Value}
 			}
 		}
 		close(ch)
 	}()
 
 	// stage 2: store those fields in a key-value store.
+	log.Println("Inserting keys for", year)
 	ctr := 0
+
 	for cve := range ch {
-		fmt.Println(cve.ID, "=>", cve.Description)
+		store.Insert(bolthold.NextSequence(), &cve)
+		if ctr%500 == 0 {
+			log.Printf("...inserted record #%d (CVE-%s-%d)\n", ctr, year, cve.IDShort)
+		}
 		ctr += 1
 	}
-	fmt.Println("read ", ctr, "records")
+	log.Println("inserted", ctr, "values")
 
 	return nil
 }

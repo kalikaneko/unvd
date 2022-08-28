@@ -3,11 +3,13 @@ package nvd
 import (
 	"os"
 	"path"
+
+	"github.com/timshannon/bolthold"
 )
 
 type Client struct {
-	feedDir        string
-	CompactCVEChan chan CompactCVE
+	feedDir      string
+	compactStore *bolthold.Store
 }
 
 func NewClient(baseDir string) (cl *Client, err error) {
