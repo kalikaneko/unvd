@@ -128,14 +128,15 @@ func (c *Client) GetDescription(cveID string) (string, error) {
 			return "", err
 		}
 	}
-	shortID, _ := strconv.Atoi(strings.Split(cveID, "-")[2])
+	shortID := strings.Split(cveID, "-")[2]
 
 	store, err := c.openCompactDB(year)
 	if err != nil {
 		return "", err
 	}
 	res := []*CVEIndex{}
-	store.Find(&res, bolthold.Where("IDShort").Eq(int(shortID)))
+	store.Find(&res, bolthold.Where("ID").Eq(shortID))
+
 	if len(res) == 0 {
 		return "", fmt.Errorf("CVE not found: %s", cveID)
 	} else if len(res) > 1 {
@@ -162,14 +163,33 @@ func (c *Client) createCompactSummary(year string) error {
 	if err != nil {
 		return err
 	}
-	all := &cveDesc{}
-	buf, _ := ioutil.ReadAll(f)
-	json.Unmarshal(buf, all)
+	defer f.Close()
+
+	decoder := json.NewDecoder(f)
+
 	go func() {
-		for _, i := range all.CVEITems {
-			for _, d := range i.CVE.Description.Data {
-				idx, _ := strconv.Atoi(strings.Split(i.CVE.Meta.ID, "-")[2])
-				ch <- CVEIndex{IDShort: idx, Description: d.Value}
+		// Discard JSON tokens until reaching CVE_Items array
+		for {
+			tok, err := decoder.Token()
+			if err != nil {
+				continue
+			}
+			if tok == "CVE_Items" {
+				// Read next opening bracket
+				decoder.Token()
+
+				var cve cveInnerItem
+				for decoder.More() {
+					err = decoder.Decode(&cve)
+					if err != nil {
+						continue
+					}
+					for _, d := range cve.CVE.Description.Data {
+						idx := strings.Split(cve.CVE.Meta.ID, "-")[2]
+						ch <- CVEIndex{ID: idx, Description: d.Value}
+					}
+
+				}
 			}
 		}
 		close(ch)
@@ -180,9 +200,9 @@ func (c *Client) createCompactSummary(year string) error {
 	ctr := 0
 
 	for cve := range ch {
-		store.Insert(bolthold.NextSequence(), &cve)
+		store.Insert(string(cve.ID), &cve)
 		if ctr%500 == 0 {
-			log.Printf("...inserted record #%d (CVE-%s-%d)\n", ctr, year, cve.IDShort)
+			log.Printf("...inserted record #%d (CVE-%s-%s)\n", ctr, year, cve.ID)
 		}
 		ctr += 1
 	}
