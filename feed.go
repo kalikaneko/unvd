@@ -1,9 +1,11 @@
 package nvd
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -153,9 +155,9 @@ func (c *Client) createCompactSummary(year string) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
 
-	ch := make(chan CVEIndex, 5000)
+	// the bottleneck is going to be writing to disk, but let's buffer a bit
+	ch := make(chan CVEIndex, 500)
 
 	// the compact summary only picks the fields we're interested in: description.
 	// stage 1: iterate through all the json and emit only the useful fields
@@ -170,25 +172,24 @@ func (c *Client) createCompactSummary(year string) error {
 	go func() {
 		// Discard JSON tokens until reaching CVE_Items array
 		for {
+
 			tok, err := decoder.Token()
 			if err != nil {
-				continue
+				break
 			}
 			if tok == "CVE_Items" {
 				// Read next opening bracket
 				decoder.Token()
-
-				var cve cveInnerItem
 				for decoder.More() {
+					cve := cveInnerItem{}
 					err = decoder.Decode(&cve)
 					if err != nil {
-						continue
+						break
 					}
 					for _, d := range cve.CVE.Description.Data {
 						idx := strings.Split(cve.CVE.Meta.ID, "-")[2]
 						ch <- CVEIndex{ID: idx, Description: d.Value}
 					}
-
 				}
 			}
 		}
@@ -207,7 +208,6 @@ func (c *Client) createCompactSummary(year string) error {
 		ctr += 1
 	}
 	log.Println("inserted", ctr, "values")
-
 	return nil
 }
 
@@ -330,13 +330,25 @@ func (c *Client) searchFeed(year string, cveID string) (CVEItem, error) {
 
 // downloadFeed downloads a gz compressed feed file from u url to p file path
 func (c *Client) downloadFeed(u, p string) (err error) {
+	// open the uri
 	resp, err := http.Get(u)
 	if err != nil {
 		return fmt.Errorf("error http request to %s: %v", u, err)
 	}
 	defer resp.Body.Close()
 
-	raw := decompressGZ(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+
+	// create a gzip reader over body reader
+	archive, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+
+	// create the file sink
 
 	file, err := os.Create(p)
 	if err != nil {
@@ -344,11 +356,8 @@ func (c *Client) downloadFeed(u, p string) (err error) {
 	}
 	defer file.Close()
 
-	_, err = file.Write(raw)
-	if err != nil {
-		return fmt.Errorf("error writing to local feed file %s: %v", p, err)
-	}
-	return nil
+	_, err = io.Copy(file, archive)
+	return err
 }
 
 func (c *Client) fetchLocalMeta(year string) (NVDMeta, error) {
