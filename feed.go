@@ -117,6 +117,7 @@ func (c *Client) GetDescription(cveID string) (string, error) {
 	}
 	year := strings.Split(cveID, "-")[1]
 	if !isFileExists(c.pathToCompact(year)) {
+		log.Println("Fetching feed for", year)
 		err := c.createCompactSummary(year)
 		if err != nil {
 			return "", err
