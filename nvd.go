@@ -8,8 +8,8 @@ import (
 )
 
 type Client struct {
-	feedDir      string
-	compactStore *bolthold.Store
+	feedDir       string
+	compactStores map[string]*bolthold.Store
 }
 
 func NewClient(baseDir string) (cl *Client, err error) {
@@ -25,7 +25,10 @@ func NewClient(baseDir string) (cl *Client, err error) {
 		}
 	}
 
+	compactStores := make(map[string]*bolthold.Store)
+
 	return &Client{
-		feedDir: feedDir,
+		feedDir:       feedDir,
+		compactStores: compactStores,
 	}, nil
 }

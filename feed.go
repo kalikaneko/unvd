@@ -104,10 +104,15 @@ func (c *Client) PrefetchYear(year string) error {
 }
 
 func (c *Client) openCompactDB(year string) (*bolthold.Store, error) {
+	var store *bolthold.Store
+	if store, ok := c.compactStores[year]; ok {
+		return store, nil
+	}
 	store, err := bolthold.Open(c.pathToCompact(year), 0666, nil)
 	if err != nil {
 		return nil, err
 	}
+	c.compactStores[year] = store
 	return store, nil
 }
 
