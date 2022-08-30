@@ -146,19 +146,21 @@ func (c *Client) GetDescription(cveID string) (string, error) {
 		}
 		return res[0].Description, nil
 	}
-	desc := c.QueryDescriptionSQLite(shortID)
+	desc := c.QueryDescriptionSQLite(cveID)
 	return desc, nil
 }
 
 func (c *Client) openCompactSqlite() error {
+	if c.db != nil {
+		return nil
+	}
 	db, err := sql.Open("sqlite3", c.pathToCompactSQLite())
 	if err != nil {
 		return err
 	}
 	c.db = db
-	sqlStmt := `
-	create table if not exists cve (cve text not null primary key, desc text);
-	`
+	db.Exec("PRAGMA journal_mode=WAL;")
+	sqlStmt := `create table if not exists cve (id serial, cveid not null primary key, desc text, UNIQUE(cveid));`
 	_, err = db.Exec(sqlStmt)
 	if err != nil {
 		log.Printf("%q: %s\n", err, sqlStmt)
@@ -172,7 +174,7 @@ func (c *Client) insertCVESqlite(cve, desc string) error {
 	if err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare("insert into cve(cve, desc) values(?, ?)")
+	stmt, err := tx.Prepare("insert or ignore into cve(cveid, desc) values(?, ?)")
 	if err != nil {
 		return err
 	}
@@ -193,7 +195,7 @@ func (c *Client) QueryDescriptionSQLite(cveID string) string {
 	if c.db == nil {
 		c.openCompactSqlite()
 	}
-	stmt, err := c.db.Prepare("select desc from cve where cve = ?")
+	stmt, err := c.db.Prepare("select desc from cve where cveid = ?")
 	if err != nil {
 		log.Println(err)
 		return ""
@@ -281,12 +283,14 @@ func (c *Client) createCompactSummary(year string) error {
 		}
 		for cve := range ch {
 			c.insertCVESqlite(cve.ID, cve.Description)
-			// TODO --- can do bulk insert
+			// TODO --- do bulk insert instead -----------------------------------------
 			if ctr%500 == 0 {
 				log.Printf("...inserted record #%d (CVE-%s-%s)\n", ctr, year, cve.ID)
 			}
 			ctr += 1
 		}
+		c.db.Close()
+		c.db = nil
 	}
 	log.Println("inserted", ctr, "values")
 	return nil
