@@ -11,6 +11,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	client.Sqlite = true
 	err = client.PrefetchYear("2022")
 	if err != nil {
 		panic(err)

@@ -1,15 +1,19 @@
 package nvd
 
 import (
+	"database/sql"
 	"os"
 	"path"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/timshannon/bolthold"
 )
 
 type Client struct {
 	feedDir       string
 	compactStores map[string]*bolthold.Store
+	Sqlite        bool
+	db            *sql.DB
 }
 
 func NewClient(baseDir string) (cl *Client, err error) {

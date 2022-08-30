@@ -2,6 +2,7 @@ package nvd
 
 import (
 	"compress/gzip"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,11 +27,6 @@ const (
 
 // ErrNotFound occurs when CVE is expected but no result is returned from fetch operations
 var ErrNotFound = errors.New("CVE not found")
-
-// Fetch description returns just the description for a given CVE ID.
-func (c *Client) FetchDescription(cveID string) string {
-	return ""
-}
 
 // FetchCVE extracts the year of a CVE ID, and returns a CVEItem data struct
 // from the most up-to-date NVD data feed for that year
@@ -123,41 +119,106 @@ func (c *Client) GetDescription(cveID string) (string, error) {
 		return "", fmt.Errorf("invalid CVE ID: %s", cveID)
 	}
 	year := strings.Split(cveID, "-")[1]
-	if !isFileExists(c.pathToCompact(year)) {
-		log.Println("Fetching feed for", year)
-		err := c.createCompactSummary(year)
-		if err != nil {
-			return "", err
+
+	if !c.Sqlite {
+		if !isFileExists(c.pathToCompact(year)) {
+			log.Println("Fetching feed for", year)
+			err := c.createCompactSummary(year)
+			if err != nil {
+				return "", err
+			}
 		}
 	}
 	shortID := strings.Split(cveID, "-")[2]
 
-	store, err := c.openCompactDB(year)
-	if err != nil {
-		return "", err
-	}
-	res := []*CVEIndex{}
-	store.Find(&res, bolthold.Where("ID").Eq(shortID))
+	if !c.Sqlite {
+		store, err := c.openCompactDB(year)
+		if err != nil {
+			return "", err
+		}
+		res := []*CVEIndex{}
+		store.Find(&res, bolthold.Where("ID").Eq(shortID))
 
-	if len(res) == 0 {
-		return "", fmt.Errorf("CVE not found: %s", cveID)
-	} else if len(res) > 1 {
-		return "", fmt.Errorf("Too many CVEs: %d", len(res))
+		if len(res) == 0 {
+			return "", fmt.Errorf("CVE not found: %s", cveID)
+		} else if len(res) > 1 {
+			return "", fmt.Errorf("Too many CVEs: %d", len(res))
+		}
+		return res[0].Description, nil
 	}
-	return res[0].Description, nil
+	desc := c.QueryDescriptionSQLite(shortID)
+	return desc, nil
 }
 
-func (c *Client) createCompactSummary(year string) error {
-	if isFileExists(c.pathToCompact(year)) {
-		return nil
-	}
-	store, err := c.openCompactDB(year)
+func (c *Client) openCompactSqlite() error {
+	db, err := sql.Open("sqlite3", c.pathToCompactSQLite())
 	if err != nil {
 		return err
 	}
+	c.db = db
+	sqlStmt := `
+	create table if not exists cve (cve text not null primary key, desc text);
+	`
+	_, err = db.Exec(sqlStmt)
+	if err != nil {
+		log.Printf("%q: %s\n", err, sqlStmt)
+		return err
+	}
+	return nil
+}
+
+func (c *Client) insertCVESqlite(cve, desc string) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare("insert into cve(cve, desc) values(?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	_, err = stmt.Exec(cve, desc)
+	if err != nil {
+		return err
+	}
+	err = tx.Commit()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// Fetch description returns just the description for a given CVE ID.
+func (c *Client) QueryDescriptionSQLite(cveID string) string {
+	if c.db == nil {
+		c.openCompactSqlite()
+	}
+	stmt, err := c.db.Prepare("select desc from cve where cve = ?")
+	if err != nil {
+		log.Println(err)
+		return ""
+	}
+	defer stmt.Close()
+	var desc string
+	err = stmt.QueryRow(cveID).Scan(&desc)
+	if err != nil {
+		log.Println(err)
+		return ""
+	}
+	return desc
+}
+
+func (c *Client) createCompactSummary(year string) error {
+	if !c.Sqlite {
+		if isFileExists(c.pathToCompact(year)) {
+			return nil
+		}
+	}
+	// TODO: sqlite -- check if we have values for that year.
+	// or store a special table for year "done"
 
 	// the bottleneck is going to be writing to disk, but let's buffer a bit
-	ch := make(chan CVEIndex, 500)
+	ch := make(chan CVEIndex, 1000)
 
 	// the compact summary only picks the fields we're interested in: description.
 	// stage 1: iterate through all the json and emit only the useful fields
@@ -187,8 +248,9 @@ func (c *Client) createCompactSummary(year string) error {
 						break
 					}
 					for _, d := range cve.CVE.Description.Data {
-						idx := strings.Split(cve.CVE.Meta.ID, "-")[2]
-						ch <- CVEIndex{ID: idx, Description: d.Value}
+						//idx := strings.Split(cve.CVE.Meta.ID, "-")[2]
+						//ch <- CVEIndex{ID: idx, Description: d.Value}
+						ch <- CVEIndex{ID: cve.CVE.Meta.ID, Description: d.Value}
 					}
 				}
 			}
@@ -200,12 +262,31 @@ func (c *Client) createCompactSummary(year string) error {
 	log.Println("Inserting keys for", year)
 	ctr := 0
 
-	for cve := range ch {
-		store.Insert(string(cve.ID), &cve)
-		if ctr%500 == 0 {
-			log.Printf("...inserted record #%d (CVE-%s-%s)\n", ctr, year, cve.ID)
+	if !c.Sqlite {
+		store, err := c.openCompactDB(year)
+		if err != nil {
+			return err
 		}
-		ctr += 1
+		for cve := range ch {
+			store.Insert(string(cve.ID), &cve)
+			if ctr%500 == 0 {
+				log.Printf("...inserted record #%d (CVE-%s-%s)\n", ctr, year, cve.ID)
+			}
+			ctr += 1
+		}
+	} else {
+		err := c.openCompactSqlite()
+		if err != nil {
+			return err
+		}
+		for cve := range ch {
+			c.insertCVESqlite(cve.ID, cve.Description)
+			// TODO --- can do bulk insert
+			if ctr%500 == 0 {
+				log.Printf("...inserted record #%d (CVE-%s-%s)\n", ctr, year, cve.ID)
+			}
+			ctr += 1
+		}
 	}
 	log.Println("inserted", ctr, "values")
 	return nil
@@ -279,6 +360,10 @@ func (c *Client) pathToMeta(year string) string {
 
 func (c *Client) pathToCompact(year string) string {
 	return path.Join(c.feedDir, fmt.Sprintf("%s.db", year))
+}
+
+func (c *Client) pathToCompactSQLite() string {
+	return path.Join(c.feedDir, "cve.db")
 }
 
 func (c *Client) loadFeed(year string) ([]byte, error) {
